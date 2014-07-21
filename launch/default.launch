@@ -1,0 +1,7 @@
+<launch>
+	<rosparam param = "joy_node/dev">/dev/input/js1</rosparam>
+	<node pkg = "joy" name = "joy_node" output = "screen" />
+	<node pkg = "motor_controlling" name = "termios_int" output = "screen" />
+
+	<!--Insert Flashing and Loading instructions above termios_int. Program termios int to wait for a handshake and the wonderboard to send such a handshake-->
+</launch>
