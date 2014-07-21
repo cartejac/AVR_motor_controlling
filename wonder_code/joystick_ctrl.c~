@@ -1,0 +1,143 @@
+#include <stdlib.h>
+#include <avr/io.h>
+#include <avr/wdt.h>
+#include <avr/interrupt.h>
+
+#include "motor_state.h"
+#include "usart.h"
+
+//Connection Setup
+#define BAUD_RATE 51
+#define CPU_PRESCALE(n) (CLKPR = 0x80, CLKPR = (n))
+
+//Motor Controller Interface Macros
+#define MTR_CTRLR_LEFT_ENABLE (1<<PD0)
+#define MTR_CTRLR_RIGHT_ENABLE (1<<PD1)
+#define MTR_CTRLR_LEFT_DIR (1<<PD2)
+#define MTR_CTRLR_RIGHT_DIR (1<<PD3)
+
+//Control Enums
+#define RUN_NONE 0
+#define RUN_ALL 1
+
+const unsigned char all_ones = 255;
+const unsigned char all_zeroes = 0;
+
+void init();
+void get_motor_cnt();
+void rx_motor_states();
+void allocate_motors();
+void activate_motor(unsigned char motor_idx);
+void deactivate_motor(unsigned char motor_idx);
+
+void kill_motors();
+void zero_port_d();
+
+unsigned char op_code;
+ISR(USART1_RX_vect)
+{
+	op_code = UDR1;
+	switch (op_code){
+		case NEW_MTR_STATE:
+			rx_motor_states();
+			break;
+		default:
+			USART_send_string("Error: Found unsupported OP! Terminating.");
+			exit(1);
+	};
+}
+
+//TODO:Implement the clock interrupt to enable
+//	variable power functionality.
+unsigned char current_count = 99;
+
+
+unsigned char num_motors;
+struct motor_state* motors;
+
+int main(){
+	init();
+	MCUSR &= ~_BV(WDRF);
+	wdt_disable();
+	
+	get_motor_cnt();
+	allocate_motors();
+
+	unsigned char i;
+	while(1){
+		current_count = current_count % 100;
+		for (i = 0; i < num_motors; ++i){
+			if (motors[i].enabled == MOTOR_EN 
+				&& motors[i].power_percentage > current_count){
+				activate_motor(i);
+			} else {
+				deactivate_motor(i);
+			}
+		}
+	}
+}
+
+void get_motor_cnt()
+{
+	//TODO: implement a USART request for such a number
+	//	send back an error if we do not get the OP_CODE
+	//	to set this bit.
+	num_motors = 2;
+}
+
+void allocate_motors()
+{
+	motors = malloc(sizeof(struct motor_state) * num_motors);
+	if (motors == NULL){
+		USART_send_string("Error: Could not allocate all required motors. Terminating.");
+		exit(1);
+	} else {
+		USART_send_string("Motor state structures allocated!");
+	}
+
+}
+
+void rx_motor_states()
+{
+	USART_send_string("Receiving motor states.\n");
+	unsigned char* pos = (unsigned char*) motors;
+	unsigned char* term_pos = (unsigned char*) motors + (sizeof(struct motor_state) * num_motors);
+
+	while (pos != term_pos){
+		*pos = USART_receive();
+		pos++;
+	}
+
+	USART_send_string("Got motor states!\n");
+}
+
+void activate_motor(unsigned char motor_idx)
+{
+	PORTD |= (1 << motors[motor_idx].motor_en_pin_bit);
+	PORTD &= ~(1 << (motors[motor_idx].motor_en_pin_bit + 1));
+	PORTD |= (motors[motor_idx].dir << (motors[motor_idx].motor_en_pin_bit + 1));
+}
+
+void deactivate_motor(unsigned char motor_idx)
+{
+	PORTD &= ~(1 << motors[motor_idx].motor_en_pin_bit);
+}
+
+void init()
+{
+	CPU_PRESCALE(0);
+
+	USART_init(BAUD_RATE);
+	USART_send_string("We're online jack!");
+}
+
+void zero_port_d()
+{
+	DDRD = 0b11111111;
+	PORTD = 0b00000000;
+}
+
+void kill_motors()
+{
+	PORTD = ~MTR_CTRLR_LEFT_ENABLE | ~MTR_CTRLR_RIGHT_ENABLE;
+}
