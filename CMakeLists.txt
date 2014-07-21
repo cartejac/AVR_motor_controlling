@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(motor_controlling)
 
+set(CMAKE_C_COMPILER "avr-gcc")
+
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
@@ -104,6 +106,7 @@ include_directories(
 
 ## Declare a cpp executable
 add_executable(termios_int src/laptop_code/termios_int.cpp)
+target_link_libraries(termios_int ${catkin_LIBRARIES})	#link to ros.h
 set_target_properties(termios_int PROPERTIES COMPILE_FLAGS "-Wall -g")
 
 ## Add cmake target dependencies of the executable/library

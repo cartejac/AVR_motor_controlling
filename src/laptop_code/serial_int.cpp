@@ -15,6 +15,8 @@ using std::string;
 void init_connection(SerialStream& stream);
 
 int main(int argc, char** argv){
+	ros::init(argc, argv, "motor_controller");
+	ros::NodeHandle n;
 	cout << "Initializing Serial Connection to Wunderboard!" << endl;
 	SerialStream wunder_board;
 	init_connection(wunder_board);
