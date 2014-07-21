@@ -1,1 +1,0 @@
-The Enable and Direction pins are controlled by a simple NOR gate, the datasheet for which is included in this folder. It can take voltages between 0.5 and 7.5 V to power its gate logic, which I'm positive the Wonderboard can provide.

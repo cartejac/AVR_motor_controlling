@@ -1,4 +1,0 @@
-It is interesting to build up the toolchain:
-	first, you need binutils configured specifically for avr. so make a new directory, copy some binutil source (snapshot maybe) and compile it. You need to run the configure script to set up some pathing and such (set program prefixes so we dont muck with normal tools, set the target as --avr, etc...)
-	second, you need to download and make gcc-avr yourself. Download and extract a recent gcc snapshot, make a new subdirectory, build from inside the directory after some configuring.
-		you need to add these new executables to your path (export PATH=$PATH:/opt/avr/bin, or wherever you put the binutils).

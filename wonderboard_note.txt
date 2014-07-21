@@ -1,1 +1,0 @@
-Prototyping: run a logic gate from the microcontroller. Then run an LED from a separate power source using a logic gate and the microcontroller.
