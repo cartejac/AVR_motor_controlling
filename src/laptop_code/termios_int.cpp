@@ -40,52 +40,65 @@ bool operator == (struct termios& config1, struct termios& config2)
 	return false;
 }	
 
+class MotorTranslator{
+public:
+	MotorTranslator();
+	MotorTranslator(int num_motors, int conn_fd);
+
+	void push_joy_to_motors();
+	void set_new_motor_state(const sensor_msgs::Joy::ConstPtr& msg);
+
+private:
+	int motor_fd;
+	int motor_cnt;
+	bool has_new_motor_state;
+	sensor_msgs::Joy motor_state;
+	struct motor_state* motors;
+
+	double get_angle_of_stick(vector<float> axes);
+	double get_magnitude_of_stick(vector<float> axes);	
+	void mk_motor_msg(double theta, double mag);
+	void joy_to_motor_dir_and_speed(struct motor_state* motor, double power);
+	double get_opposite_motor_power(double theta);
+};
+
 string get_device_loc(int argc, char** argv);
 int open_conn(string& device_location);
 void configure_connection(int conn_fd, struct termios& config);
 
 void transmit_motor_state(struct motor_state *motors, int num_motors, int conn_fd);
+void write_op(int motor_fd, unsigned char op);
+void write_data_to_motors(int motor_fd, char* start_of_data, char* end_of_data);
 void joy_callback(const sensor_msgs::Joy::ConstPtr& msg);
-double get_angle_of_stick(vector<float> axes);
-double get_magnitude_of_stick(vector<float> axes);
-void mk_motor_msg(struct motor_state* motors, int num_motors, double theta, double mag);
+
+void configure_motor(struct motor_state* motor);
+void mk_manual_motor_msg(struct motor_state* motors, int num_motors);
+
+MotorTranslator* motor_translator;
 
 int main(int argc, char** argv){
 	ros::init(argc, argv, "motor_controller");
 	ros::NodeHandle n;
-	struct termios conn_properties;
 	string device_location = get_device_loc(argc, argv);
 	int conn_fd = open_conn(device_location);
 
+	struct termios conn_properties;
 	configure_connection(conn_fd, conn_properties);
-
-	struct motor_state motors[2];
-	motors[0].motor_state = 10 + LEFT_MOTOR + MOTOR_EN + FORWARD_DIR;
-       	motors[1].motor_state = 10 + RIGHT_MOTOR + MOTOR_EN + BACKWARD_DIR;
-
-	//	transmit_motor_state(motors, 2, conn_fd);
-
-	cout << "Sizeof motor_state struct" << sizeof(struct motor_state) << endl;
-
-	char buf[1000];
-	int msg_size;
-	while (1){
-		if ((msg_size = read(conn_fd, buf, 1000)) > 0){
-			buf[msg_size] = '\0';
-			cout << buf;
-			cout << "  msg_size: " << msg_size;
-			//sleep(4);
-		} else if (msg_size == -1 && errno == 11){
-			//perror("Reading error from USART: ");
-			//cout << "errno: " << errno;
-			//exit(1);
-		} else {
-			perror("Reading USART error:");
-			exit(1);
-		}
-
-		//usleep(1000*50);
+	
+	/*while (1){
+		mk_manual_motor_msg(motors, 2);
 		transmit_motor_state(motors, 2, conn_fd);
+	}*/
+
+	motor_translator = new MotorTranslator(2, conn_fd);
+	ros::Subscriber joy_subsciber = n.subscribe<sensor_msgs::Joy>("joy", 10, joy_callback);
+	ros::AsyncSpinner spinny(1);
+	spinny.start();
+
+	ros::Duration peace(0.2);
+	while(ros::ok()){
+		motor_translator->push_joy_to_motors();
+		peace.sleep();
 	}
 }
 
@@ -159,44 +172,88 @@ void configure_connection(int conn_fd, struct termios& config)
 
 void transmit_motor_state(struct motor_state *motors, int num_motors, int conn_fd)
 {
-	int ret_val = write(conn_fd, &NEW_MTR_STATE_OP, sizeof(NEW_MTR_STATE_OP));
-	tcdrain(conn_fd);
+	write_op(conn_fd, NEW_MTR_STATE_OP);
+
+	char* end_motor_data = (char*) motors + (sizeof(motor_state) * num_motors);
+	write_data_to_motors(conn_fd, (char*) motors, end_motor_data);
+}
+
+void write_op(int motor_fd, unsigned char op)
+{
+	int ret_val = write(motor_fd, &op, sizeof(op));
+	tcdrain(motor_fd);
 	if (ret_val == -1){
 		perror("Could not write motor op to connection: ");
+		exit(1);
+
 	} else {
-		cout << "Wrote: " << ret_val << " bytes." << endl;
+		cout << "Wrote: " << ret_val << " bytes for op code." << endl;
+	}
+}
+
+//Writes contiguous data such as an array
+void write_data_to_motors(int motor_fd, char* start_of_data, char* end_of_data)
+{
+	if (abs(end_of_data - start_of_data) > 2){
+		cout << "write_data_to_motors() sends data one byte at a time, could be optimized." << endl;
 	}
 
-	char* pos = (char*) motors;
-	char* term_pos = (char*) motors + (sizeof(motor_state) * num_motors);
-	char empty_buf;
-	tcflush(conn_fd, TCIOFLUSH);
-	while(pos != term_pos){
-		ret_val = write(conn_fd, pos, 1);
+	int ret_val;
+	while(start_of_data != end_of_data){
+		ret_val = write(motor_fd, start_of_data, 1);
 		if (ret_val == -1){
 			perror("Could not write motor states to connection: ");
-		} else {
-			cout << "Wrote: " << ret_val << " bytes." << endl;
 		}
 
-		//usleep(1000 * 20);
-		pos++;
+		start_of_data++;
 	}
-	
 }
 
-void joy_callback(const sensor_msgs::Joy::ConstPtr& msg, struct motor_state* motors, int num_motors, int conn_fd)
+void joy_callback(const sensor_msgs::Joy::ConstPtr& msg)
 {
+	cout << "Got joy message!" << endl;
 	ROS_INFO("Got joy message =)");
-	double theta_rad = get_angle_of_stick(msg->axes);
-	double mag = get_magnitude_of_stick(msg->axes);
-
-	mk_motor_msg(motors, num_motors, theta_rad, mag);
-
-	transmit_motor_state(motors, num_motors, conn_fd);
+	motor_translator->set_new_motor_state(msg);
 }
 
-double get_angle_of_stick(vector<float> axes)
+MotorTranslator::MotorTranslator()
+{
+	cout << "ERROR! Default constructor called for MotorTranslator, not possible to reconcile." << endl;
+	exit(1);
+}
+
+MotorTranslator::MotorTranslator(int num_motors, int conn_fd)
+{
+	motor_cnt = num_motors;
+	motors = new struct motor_state[motor_cnt];
+	has_new_motor_state = false;
+
+	motor_fd = conn_fd;
+}
+
+void MotorTranslator::set_new_motor_state(const sensor_msgs::Joy::ConstPtr& msg)
+{
+	motor_state = *msg;
+	has_new_motor_state = true;
+}
+
+void MotorTranslator::push_joy_to_motors(){
+	if (!has_new_motor_state){
+		return;
+
+	} else {
+		has_new_motor_state = false;
+	}
+
+	double theta_rad = get_angle_of_stick(motor_state.axes);
+	double mag = get_magnitude_of_stick(motor_state.axes);
+
+	mk_motor_msg(theta_rad, mag);
+
+	transmit_motor_state(motors, motor_cnt, motor_fd);
+}
+
+double MotorTranslator::get_angle_of_stick(vector<float> axes)
 {
 	double theta;
 	if (axes[0] == 0){
@@ -206,7 +263,8 @@ double get_angle_of_stick(vector<float> axes)
 			theta = (3 * M_PI) / 2;
 		}	
 	} else {
-		double theta = atan(axes[1] / axes[0]);
+		theta = atan(axes[1] / axes[0]);
+		cout << "Original theta" << theta << endl;
 		if (axes[0] < 0) {
 			theta = M_PI - theta;
 		}
@@ -215,14 +273,14 @@ double get_angle_of_stick(vector<float> axes)
 	return theta;
 }
 
-double get_magnitude_of_stick(vector<float> axes)
+double MotorTranslator::get_magnitude_of_stick(vector<float> axes)
 {
 	return sqrt(pow(axes[0], 2) + pow(axes[1], 2));
 }
 
-void mk_motor_msg(struct motor_state* motors, int num_motors, double theta, double mag)
+void MotorTranslator::mk_motor_msg(double theta, double mag)
 {
-	if (num_motors != 2){
+	if (motor_cnt != 2){
 		cout << "mk_motor_msg was not build for other than 2 motors. Preserving state." << endl;
 		return;
 	}
@@ -232,29 +290,52 @@ void mk_motor_msg(struct motor_state* motors, int num_motors, double theta, doub
 	set_motor_enable(motors, 1);
 	set_motor_enable(motors + 1, 1);
 
-	double scale_factor = mag * 100;
-	double l_power = sin(M_PI - 0.5*theta);
+	/*double l_power = sin(M_PI - 0.5*theta);
 	double r_power = sin(0.5 * theta);
-	l_power >= r_power ? (scale_factor *= (1 / l_power)) : (scale_factor *= (1 / r_power));
-	l_power *= scale_factor;
-	r_power *= scale_factor;
+	l_power >= r_power ? (mag *= (1 / l_power)) : (mag *= (1 / r_power));
+	l_power *= mag;
+	r_power *= mag;
+*/
+	double l_power, r_power;
+	if (theta > M_PI / 2){
+		r_power = 100 * mag;
+		l_power = get_opposite_motor_power(theta) * mag;
 
-	//TODO: Remove enables and functionalize the below a little
-
-	if (l_power < 0){
-		set_motor_dir(motors, 0);
-	} else { 
-		set_motor_dir(motors, 1);
-	}
-
-	if (r_power < 0){
-		set_motor_dir(motors + 1, 0);
 	} else {
-		set_motor_dir(motors + 1, 0);
+		l_power = 100 * mag;
+		r_power = get_opposite_motor_power(theta) * mag;
 	}
 
-	set_motor_speed(motors, fabs(l_power));
-	set_motor_speed(motors + 1, fabs(r_power));
+	if (theta > M_PI){
+		double temp = l_power;
+		l_power = -r_power;
+		r_power = -temp;
+	}
+
+	cout << "l_power: " << l_power << " r_power: " << r_power << endl;
+
+	joy_to_motor_dir_and_speed(motors, l_power);
+	joy_to_motor_dir_and_speed(motors + 1, r_power);
+
+	cout << "Lspeed: " << (int) get_motor_speed(motors) 
+			<< " Rspeed: " << (int) get_motor_speed(motors + 1) << endl;
+}
+
+double MotorTranslator::get_opposite_motor_power(double theta)
+{
+	cout << "Theta: " << theta << " res: " << (100 - 200 * fabs(cos(theta))) << endl;
+	return (100 - 200 * fabs(cos(theta)));
+}
+
+void MotorTranslator::joy_to_motor_dir_and_speed(struct motor_state* motor, double power)
+{
+	if (power < 0){
+		set_motor_dir(motor, 0);
+	} else { 
+		set_motor_dir(motor, 1);
+	}
+
+	set_motor_speed(motor, fabs(power));
 }
 
 void all_motors(double magnitude, struct motor_state* motors, int num_motors, unsigned char dir)
@@ -266,4 +347,37 @@ void all_motors(double magnitude, struct motor_state* motors, int num_motors, un
 	}
 }
 
+void mk_manual_motor_msg(struct motor_state* motors, int num_motors)
+{
+	
+	set_motor_left(motors + 0);
+	cout << "Left Motor: " << endl;
+	configure_motor(motors + 0);
 
+	set_motor_right(motors + 1);
+	cout << "Right Motor: " << endl;
+	configure_motor(motors + 1);
+}
+
+void configure_motor(struct motor_state* motor)
+{
+	string dir;
+	string en;
+	string speed;
+
+	cout << "\tEnable (y/else): ";
+	cin >> en;
+	if (en == "y" || en == "Y"){
+		set_motor_enable(motor, 1);
+		cout << "\tDirection (f/b): ";
+		cin >> dir;
+		if (dir == "f" || dir == "F"){
+			set_motor_dir(motor, 1);
+		} else {
+			set_motor_dir(motor, 0);
+		}
+	} else {
+		set_motor_enable(motor, 0);
+	}
+
+}

@@ -40,6 +40,7 @@ unsigned char new_motor_state;
 unsigned char op_code;
 ISR(USART1_RX_vect)
 {
+	cli();
 	//USART_send_string("Interrupt triggered!\r\n");
 	if (filling_motor_buf){
 		*buf_pos = UDR1;
@@ -55,33 +56,32 @@ ISR(USART1_RX_vect)
 		op_code = UDR1;
 		if (NEW_MTR_STATE_OP == op_code){
 			filling_motor_buf = 1;
-			buf_pos = (unsigned char*) motor_buf;	
+			buf_pos = (unsigned char*) motor_buf;
+			USART_transmit('m');	
 		} else { 
 			USART_send_string("Error: Found unsupported OP! Terminating.\r\n");
 			USART_transmit(op_code + 48);
 			exit(1);
 		}
 	}
+
+	sei();
 }
 
-/*void intake_data()
-{
-	USART_send_string("Receiving Interrupt triggered.\r\n");
-	op_code = USART_receive();
-	USART_send_string("Received: ");
-	USART_transmit(op_code + 48);
-	USART_send_string("\r\n");
-	if (NEW_MTR_STATE_OP == op_code){
-		rx_motor_states();
-	} else { 
-		USART_send_string("Error: Found unsupported OP! Terminating.\r\n");
-		exit(1);
-	}
-}
-*/
-//TODO:Implement the clock interrupt to enable
-//	variable power functionality.
 unsigned char current_count = 0;
+ISR(TIMER0_COMPA_vect)
+{
+	USART_transmit('t');
+	if (current_count >= 14){
+		current_count = 0;
+		USART_transmit('r');
+	}
+	else {
+		current_count++;
+	}
+
+	TCNT0 = 0;
+}
 
 int main(){
 	init();
@@ -103,8 +103,9 @@ int main(){
 	while(1){
 		current_count = current_count % 100;
 		for (i = 0; i < num_motors; ++i){
-			if (!(motors[i].motor_state & MOTOR_DIS) 
-				&& (motors[i].motor_state & 0x0F) > current_count){
+			if (motor_is_enabled(motors + i) 
+				&& get_motor_speed(motors + i) > current_count){
+				USART_transmit(get_motor_speed(motors + i) + 65);
 				activate_motor(i, motors);
 			} else {
 				deactivate_motor(i, motors);
@@ -114,6 +115,7 @@ int main(){
 		if (new_motor_state){
 			memcpy(motors, motor_buf, sizeof(struct motor_state) * num_motors);
 			new_motor_state = 0;
+			USART_transmit('c');
 			//print_motor_state(motors);
 		}
 	}
@@ -170,30 +172,33 @@ unsigned char get_motor_pin(struct motor_state motor)
 {
 	if (motor.motor_state & LEFT_MOTOR){
 		return 4;
-	} else if (motor.motor_state & RIGHT_MOTOR){
-		return 6;
 	}
-
-	return 0;
+	
+	return 6;	//It's the right motor.... No support for addtl motors.
 }
 
 void activate_motor(unsigned char motor_idx, struct motor_state* motors)
 {
 	unsigned char motor_pin = get_motor_pin(motors[motor_idx]);
 
-	PORTD |= (0 << motor_pin);
+	PORTD &= ~(1 << motor_pin);
 	PORTD &= ~(1 << (motor_pin + 1));
-	PORTD |= (IS_FORWARD(motors[motor_idx].motor_state) << (motor_pin + 1));
+	PORTD |= (motor_is_forward(motors + motor_idx) << (motor_pin + 1));
+
+	USART_transmit('a');
 }
 
 void deactivate_motor(unsigned char motor_idx, struct motor_state* motors)
 {
 	unsigned char motor_pin = get_motor_pin(motors[motor_idx]);
-	PORTD &= ~(1 << motor_pin);
+	PORTD |= (1 << motor_pin);
+
+	USART_transmit('d');
 }
 
 void init()
 {
+	GTCCR |= (1 << PSRSYNC);
 	CPU_PRESCALE(0);
 
 	USART_init(BAUD_RATE);
@@ -201,11 +206,21 @@ void init()
 
 	new_motor_state = 0;
 
+	DDRD = 0xFF;
+	PORTD = 0x50;
+
 	sei();
 	UCSR1B |= (1 << RXCIE1);
 	if (UCSR1B & ~(1 << RXCIE1)){
 		USART_send_string("Recieving Interrupt enabled.\r\n");
 	}
+
+	TCCR0B &= 0b11110000;
+	TCCR0B |= 0b00000101;	//Max prescaling
+	TCCR0A &= 0b11111100;	//Normal mode...
+	OCR0A = 255;
+	TIMSK0 |= 0b00000010;
+	USART_send_string("Set timer to use CPU ticks, normal mode, with 255 comparison.");
 
 }
 
